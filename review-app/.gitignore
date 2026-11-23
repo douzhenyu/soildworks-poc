@@ -1,0 +1,5 @@
+data/
+__pycache__/
+*.png
+test-upload.zip
+test-job-id.txt

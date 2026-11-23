@@ -1,0 +1,37 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["issues", "ruleReviews"],
+  "properties": {
+    "ruleReviews": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule", "status", "reason"],
+        "properties": {
+          "rule": {"type": "integer"},
+          "status": {"type": "string", "enum": ["problem", "pass", "manual", "missing"]},
+          "reason": {"type": "string"}
+        }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["page", "rule", "title", "reason", "status", "box", "elementIds"],
+        "properties": {
+          "page": {"type": "integer"},
+          "rule": {"type": "integer"},
+          "title": {"type": "string"},
+          "reason": {"type": "string"},
+          "status": {"type": "string", "enum": ["problem", "pass", "manual", "missing"]},
+          "box": {"type": "array", "items": {"type": "number"}},
+          "elementIds": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    }
+  }
+}

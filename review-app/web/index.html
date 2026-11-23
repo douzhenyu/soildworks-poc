@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>图审 · 数控审图工作台</title><link rel="stylesheet" href="/style.css?v=review5"></head>
+<body>
+<aside class="rail"><a class="brand" href="/" aria-label="图审首页"><span class="brand-icon">⌘</span><span>图审<span class="brand-sub">DRAWING REVIEW</span></span></a><div class="rail-label">工作空间</div><button class="nav active" id="workbench">▦<span>审图工作台</span></button><button class="nav" id="historyButton">◷<span>最近任务</span></button><button class="nav" id="rulesButton">☷<span>审核规则</span><small>12</small></button><div class="rail-bottom"><span class="status-dot"></span>本地工作站<div>SolidWorks API · Codex CLI</div></div></aside>
+<main><header><div><span class="eyebrow">ENGINEERING / QUALITY CONTROL</span><h1>数控审图工作台</h1></div><div class="header-actions"><button id="visionStatus" class="button quiet" type="button">模型设置</button><button id="newTask" class="button dark">＋ 新建审图</button></div></header>
+<section class="workflow" aria-label="审核流程"><div data-step="0"><b>01</b><span>上传图纸包<small>ZIP · 图纸与配套模型</small></span></div><i></i><div data-step="1"><b>02</b><span>解析与转换<small>提取信息 · 生成 PDF</small></span></div><i></i><div data-step="2"><b>03</b><span>确认图纸<small>预览完整性 · 选择规则</small></span></div><i></i><div data-step="3"><b>04</b><span>规则与视觉审核<small>定位问题 · 导出标注</small></span></div></section>
+<section id="empty" class="empty"><div class="empty-copy"><span class="section-tag">开始一次新的质量检查</span><h2>把图纸交给系统，<br>把判断留给工程师。</h2><p>上传包含工程图和配套模型的压缩包。<br>系统完成转换后，由你确认，再开始审核。</p><div class="trust"><span>✓ 原文件保留</span><span>✓ 审核前确认</span><span>✓ 问题精确定位</span></div></div><div id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="选择或拖入ZIP图纸压缩包"><div class="upload-art"><span>↥</span><div class="paper-lines"></div><em>ZIP</em></div><h3>将图纸压缩包拖到这里</h3><p>或点击选择本地文件</p><button class="button green" id="chooseFile">选择压缩包 <span>↗</span></button><small>支持 ZIP，最大 500 MB<br>包含 .SLDDRW 与配套 .SLDPRT / .SLDASM</small></div><div class="empty-footer"><span>01 / 从图纸到可追溯的问题清单</span><span>规则检查 + 多模态视觉审核</span></div></section>
+<section id="workspace" hidden><div class="batch-bar"><div><strong id="batchName">新任务</strong><span id="batchSummary"></span></div><div><button class="button quiet" id="settingsButton">☷ 选择规则</button><button class="button quiet" id="retryFiles" hidden>↻ 重试失败图纸</button><button class="button quiet" id="reReview" hidden>重新审图</button><a class="button dark" id="downloadAll" hidden>↓ 导出审核包</a></div></div><div class="progress-area" id="progressArea"><span class="spinner"></span><span id="progressMessage"></span><span id="progressValue"></span><div class="progress-track"><div id="progressFill"></div></div></div><div id="errorBanner" class="error-banner" hidden></div><div class="review-layout" id="reviewLayout">
+  <section class="pdf-panel" aria-label="图纸预览">
+    <div class="drawing-picker"><label for="fileSelect">图纸 <span id="fileCount">0</span></label><select id="fileSelect"></select><span id="drawingState"></span></div>
+    <div class="viewer-toolbar"><div class="viewer-controls">
+      <button id="prevPage" title="上一页" aria-label="上一页">‹</button><span id="pageCounter">0 / 0</span><button id="nextPage" title="下一页" aria-label="下一页">›</button>
+      <i></i><button id="zoomOut" title="缩小" aria-label="缩小">−</button><button id="zoomLabel" title="重置缩放">100%</button><button id="zoomIn" title="放大" aria-label="放大">＋</button><a id="pdfLink" title="下载当前PDF" aria-label="下载当前PDF" target="_blank" rel="noopener">↓ PDF</a><a id="evidenceLink" title="下载当前图纸的 API 证据和 PDF 坐标" hidden>↓ JSON</a>
+    </div><div class="panel-toggles"><button id="toggleRules" type="button" aria-controls="rulePanel" aria-expanded="true">规则</button><button id="toggleEvidence" type="button" aria-controls="issuePanel" aria-expanded="true">证据</button></div></div>
+    <div id="viewer" class="viewer"><div class="viewer-placeholder" id="viewerPlaceholder">转换完成后将在这里预览图纸</div><div id="sheet" class="sheet" hidden><img id="pageImage" alt="工程图PDF页面"><div id="annotations"></div></div></div>
+    <div class="viewer-footer"><span><i class="legend red"></i>有问题 <i class="legend positive"></i>没问题 <i class="legend orange"></i>需人工审核 / 缺少判断依据</span><span id="pageSize">原纸张比例</span></div>
+  </section>
+  <aside class="rule-panel" id="rulePanel" aria-label="审核规则">
+    <div class="panel-title">规则清单 <span id="ruleCount">12 项</span></div>
+    <div id="ruleProgress" class="rule-progress" aria-label="规则状态"></div>
+    <div class="rule-search"><input id="ruleSearch" type="search" placeholder="搜索规则或编号" aria-label="搜索规则或编号"></div>
+    <div id="reviewRuleList" class="review-rule-list"></div>
+  </aside>
+  <aside class="issue-panel" id="issuePanel" aria-label="审核证据">
+    <div class="panel-title"><strong id="evidenceTitle">审核证据</strong><span id="issueCount">—</span></div>
+    <div id="coverage" class="coverage"></div>
+    <div class="evidence-scope"><label for="evidenceScope">查看范围</label><select id="evidenceScope"><option value="file">当前图纸</option><option value="batch">整批图纸</option></select></div>
+    <div class="issue-tabs" aria-label="筛选结论"><button data-filter="all" class="selected">全部</button><button data-filter="problem">有问题</button><button data-filter="pass">没问题</button><button data-filter="manual">需要人工审核</button><button data-filter="missing">缺少判断依据</button></div>
+    <div id="issueList" class="issue-list"></div>
+  </aside>
+</div><div id="confirmBar" class="confirm-bar" hidden><div><span class="confirm-icon">✓</span><span><strong>转换已完成，请确认图纸完整性</strong><small id="confirmText">确认页数、图框、尺寸线和文字显示正确后，开始审图。</small></span></div><button id="startReview" class="button green">确认图纸，开始审图 →</button></div></section>
+<footer>图审工作台 <span>初审用于辅助判断，待复核项需由工程师确认。</span></footer></main>
+<input id="fileInput" type="file" accept=".zip,application/zip" hidden>
+<dialog id="rulesDialog"><div class="dialog-header"><div><span class="eyebrow">REVIEW CONFIGURATION</span><h2>选择审核规则</h2></div><button class="close-dialog" aria-label="关闭">×</button></div><p class="muted">可执行的字段检查由规则引擎处理，其余项目交由视觉模型或人工复核。</p><div id="rulesList" class="rules-grid"></div><div class="dialog-footer"><span id="rulesSelected"></span><button class="button green close-dialog">保存选择</button></div></dialog>
+<dialog id="modelDialog">
+  <div class="dialog-header"><h2>模型设置</h2><button class="close-dialog" type="button" aria-label="关闭">×</button></div>
+  <form id="modelForm">
+    <label>视觉审核来源
+      <select id="modelProvider"><option value="codex-cli">Codex CLI</option><option value="custom">自定义模型服务</option></select>
+    </label>
+    <div id="customModelFields" hidden>
+      <label>API 基础地址<input id="modelBaseUrl" type="url" placeholder="http://127.0.0.1:8001/v1"></label>
+      <label>模型名称<input id="modelName" maxlength="256" placeholder="填写服务提供的视觉模型名称"></label>
+      <label>API 密钥（可选）<input id="modelApiKey" type="password" autocomplete="new-password"></label>
+      <label id="clearModelKeyRow" hidden><input id="clearModelKey" type="checkbox">清除已保存的密钥</label>
+      <p class="muted">服务需兼容 Chat Completions，并支持图片输入和函数工具调用。审核时，图纸页面和 Agent 查阅的证据会发往所填地址。</p>
+    </div>
+    <p id="modelSettingsError" role="alert" class="error-banner" hidden></p>
+    <div class="dialog-footer"><span class="muted">设置在下一次开始审核时生效</span><button class="button green" id="saveModelSettings">保存设置</button></div>
+  </form>
+</dialog>
+<dialog id="historyDialog"><div class="dialog-header"><h2>最近任务</h2><button class="close-dialog" aria-label="关闭">×</button></div><div id="historyList"></div></dialog><div id="toast" role="status" hidden></div><script src="/app.js?v=review8"></script></body></html>
+
