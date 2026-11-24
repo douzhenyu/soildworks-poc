@@ -53,7 +53,7 @@ function render(){
  $('#progressArea').hidden=!running;$('#progressMessage').textContent=job.message;$('#progressValue').textContent=job.progress+'%';$('#progressFill').style.width=job.progress+'%';$('#errorBanner').hidden=!job.error;$('#errorBanner').textContent=job.error||'';
  $('#confirmBar').hidden=job.status!=='awaiting_confirmation';$('#confirmText').textContent=`${ready.length}/${files.length} 份可审核。请确认PDF图框、文字、尺寸线和页数正确；失败文件不进入审核。`;$('#startReview').disabled=!ready.length;
  $('#downloadAll').hidden=job.status!=='completed';$('#downloadAll').href='/api/jobs/'+job.id+'/bundle';$('#downloadAll').download='初审标注.zip';$('#fileCount').textContent=files.length;
- $('#retryFiles').hidden=running||!files.some(f=>f.status==='failed');$('#reReview').hidden=job.status!=='completed';
+ $('#retryFiles').hidden=running||!files.some(f=>f.status!=='ready');$('#reReview').hidden=job.status!=='completed';
  if(!currentFile||!files.some(f=>f.id===currentFile))currentFile=(ready[0]||files[0])?.id;
  $('#fileSelect').innerHTML=files.map(f=>`<option value="${esc(f.id)}">${esc(f.name)}${f.status==='failed'?' · 转换失败':f.pages?' · '+f.pages+' 页':''}</option>`).join('');
  $('#fileSelect').value=currentFile||'';

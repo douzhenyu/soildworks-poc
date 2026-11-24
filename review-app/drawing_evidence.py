@@ -5,6 +5,7 @@ import json
 import math
 import re
 import tempfile
+import time
 from collections import Counter
 from itertools import combinations
 from pathlib import Path
@@ -361,8 +362,12 @@ def _spatial_model(raw):
                                materialFeatureLabels=records(body, 'SpatialMaterialLabel'),
                                slotGroups=[dict(widthM=w, lengthM=l, depthM=d, count=len(ids), slotIds=ids)
                                            for (w, l, d), ids in slot_groups.items()]))
+    distances_truncated = False
     for a, b in combinations(faces, 2):
         if abs(abs(sum(x*y for x, y in zip(a['normal'], b['normal']))) - 1) <= 1e-10:
+            if len(distances) == 512:
+                distances_truncated = True
+                break
             gap = abs(sum((y-x)*n for x, y, n in zip(a['pointM'], b['pointM'], a['normal'])))
             distances.append(dict(faceIds=[a['id'], b['id']], distanceM=gap))
     boxes = [component['boundingBoxM'] for component in components]
@@ -373,7 +378,8 @@ def _spatial_model(raw):
     return dict(path=path, configuration=configuration, kind=kind, coordinateFrame='referenced-model-xyz',
                 geometryScope='component-part-solid-bodies' if kind == 'assembly' else 'part-solid-bodies',
                 boundingBoxM=root_box, components=components, planarFaces=faces,
-                parallelPlaneDistances=distances, extractionErrors=errors)
+                parallelPlaneDistances=distances, parallelPlaneDistancesTruncated=distances_truncated,
+                extractionErrors=errors)
 
 
 def _sheet(page, raw, name, index, regions, models):
@@ -599,6 +605,14 @@ def write_json(path, data):
             temporary.unlink(missing_ok=True)
             raise
     try:
-        temporary.replace(path)
+        # Windows can briefly deny a rename while another process holds the file.
+        for attempt in range(12):
+            try:
+                temporary.replace(path)
+                break
+            except OSError as error:
+                if getattr(error, 'winerror', None) not in (5, 32, 33) or attempt == 11:
+                    raise
+                time.sleep(min(.025 * 2**attempt, .25))
     finally:
         temporary.unlink(missing_ok=True)

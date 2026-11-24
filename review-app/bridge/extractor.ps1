@@ -225,7 +225,7 @@ public class SwInventory {
      }
    } catch (Exception ex) { output.AppendLine("TableReadError: " + ex.Message); }
  }
- static void ReadSpatialModel(StringBuilder output, IView view, IMathUtility math) {
+ static void ReadSpatialModel(StringBuilder output, IView view, IMathUtility math, string openingInventory) {
    try {
      IModelDoc2 model = view.ReferencedDocument as IModelDoc2;
      if (model == null) return;
@@ -233,7 +233,7 @@ public class SwInventory {
      output.AppendLine("SpatialRoot: " + model.GetPathName() + " | " + config + " | " +
                        (model is IAssemblyDoc ? "assembly" : "part"));
      if (model is IPartDoc) {
-       ReadSpatialPart(output, model, config, "root", null, math);
+       ReadSpatialPart(output, model, config, "root", null, math, openingInventory);
      } else if (model is IAssemblyDoc) {
        IConfiguration configuration = model.GetConfigurationByName(config) as IConfiguration;
        IComponent2 root = configuration == null ? null : configuration.GetRootComponent3(true) as IComponent2;
@@ -274,7 +274,7 @@ public class SwInventory {
    return (double[])((IMathPoint)point.MultiplyTransform(transform)).ArrayData;
  }
  static void ReadSpatialPart(StringBuilder output, IModelDoc2 model, string config, string instance,
-                             IMathTransform transform, IMathUtility math) {
+                             IMathTransform transform, IMathUtility math, string openingInventory = null) {
    output.AppendLine("SpatialPart: " + SingleLine(instance) + " | " + model.GetPathName() + " | " + config);
    if (transform != null) output.AppendLine("SpatialPartTransform: " + Fmt(transform.ArrayData));
    string original = model.ConfigurationManager.ActiveConfiguration.Name;
@@ -300,6 +300,7 @@ public class SwInventory {
          int slot = sign < 0 ? axis : axis + 3;
          box[slot] = sign < 0 ? Math.Min(box[slot], value) : Math.Max(box[slot], value);
        }
+       if (SkipBodyOpenings) continue;
        Array faces = body.GetFaces() as Array;
        if (faces == null) continue;
        foreach (IFace2 face in faces) {
@@ -317,9 +318,12 @@ public class SwInventory {
      }
      output.AppendLine("SpatialBox: " + Fmt(box));
      if (!SkipBodyOpenings) {
-       var geometry = new StringBuilder();
-       ReadCutoutOpenings(geometry, model, new List<Opening>());
-       foreach (string line in geometry.ToString().Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+       if (openingInventory == null) {
+         var geometry = new StringBuilder();
+         ReadCutoutOpenings(geometry, model, new List<Opening>());
+         openingInventory = geometry.ToString();
+       }
+       foreach (string line in openingInventory.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
          if (line.StartsWith("ModelBoreWall: ") || line.StartsWith("ModelCircularWallRim: ") ||
              line.StartsWith("ModelCircularOpening: ") || line.StartsWith("ModelStraightSlotOpening: "))
            output.AppendLine("Spatial" + line);
@@ -823,10 +827,13 @@ if(sk!=null) try {
  IView v=(IView)drawing.GetFirstView();
  ILayerMgr layers = model.GetLayerManager() as ILayerMgr;
  var inventories = new Dictionary<string,List<Opening>>(StringComparer.OrdinalIgnoreCase);
+ var spatialInventories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
  while(v!=null) {
  Console.WriteLine("Inventory view: " + v.GetName2() + " - metadata and tables");
- b.AppendLine("View: "+v.GetName2()+" Model: "+v.GetReferencedModelName());
- b.AppendLine("ViewMetadata: type="+v.Type+" | scale="+v.ScaleDecimal+" | configuration="+v.ReferencedConfiguration);
+ string referencedPath = v.GetReferencedModelName();
+ string referencedConfiguration = v.ReferencedConfiguration;
+ b.AppendLine("View: "+v.GetName2()+" Model: "+referencedPath);
+ b.AppendLine("ViewMetadata: type="+v.Type+" | scale="+v.ScaleDecimal+" | configuration="+referencedConfiguration);
  if (v.Type != 1) try { b.AppendLine("ViewOutline: "+Fmt(v.GetOutline())); }
  catch (Exception ex) { b.AppendLine("ViewOutlineReadError: "+SingleLine(ex.Message)); }
  if (v.Type == 3) { // swDrawingDetailView
@@ -835,8 +842,23 @@ if(sk!=null) try {
  }
  ReadTables(b,v);
  Console.WriteLine("Inventory view: reading model features");
+ int modelRecordsStart = b.Length;
  List<Opening> openings = ReadModelFeatures(b,v,inventories,math);
- if (v.Type != 1) ReadSpatialModel(b,v,math);
+ if (v.Type != 1 && !String.IsNullOrEmpty(referencedPath)) {
+   string spatialKey = referencedPath + "\n" + referencedConfiguration;
+   if (!spatialInventories.Contains(spatialKey)) {
+     Console.WriteLine("Model inventory: reading spatial geometry");
+     var spatial = new StringBuilder();
+     string openingInventory = openings == null ? null : b.ToString(modelRecordsStart, b.Length-modelRecordsStart);
+     if (openingInventory != null && !openingInventory.Contains("ModelCylinderInventoryEnd"))
+       openingInventory = null;
+     ReadSpatialModel(spatial,v,math,openingInventory);
+     string records = spatial.ToString();
+     b.Append(records);
+     if (records.Contains("SpatialRoot: ") && !records.Contains("SpatialModelReadError:"))
+       spatialInventories.Add(spatialKey);
+   }
+ }
  object[] notes=v.GetNotes() as object[];
  Console.WriteLine("Inventory view: reading visible edges");
  if (!SkipBodyOpenings) ReadVisibleEdges(b,v);

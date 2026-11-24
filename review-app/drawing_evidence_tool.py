@@ -7,7 +7,7 @@ import re
 import sys
 from itertools import combinations
 from pathlib import Path
-from size_constraint_checks import constraint_findings
+from size_constraint_checks import constraint_findings, overall_dimension_candidates
 from hole_checks import _inventories, repeated_hole_counts
 from slot_checks import numbers, same_circle, same_line
 
@@ -62,15 +62,23 @@ def diameter_diff(packet, page):
         if data.get('typeCode') != 6 or element.get('dangling'):
             continue
         text = ''.join(fragment['text'] for fragment in element.get('renderedText', []))
+        text = text.replace('<MOD-DIAM>', 'Ø')
         match = re.fullmatch(
-            r'\s*[(（]?\s*(?:\d+\s*[-×xX]\s*)?[⌀ØøΦφϕ]\s*(\d+(?:[.,]\d+)?)\s*(?:[)）])?\s*',
+            r'\s*[(（]?\s*(?:(?:\d+\s*[×xX]\s*)*\d+\s*-\s*)?'
+            r'([⌀ØøΦφϕ]?)\s*(\d+(?:[.,]\d+)?)\s*(?:通单壁|贯穿|通孔|完全贯穿)?'
+            r'\s*(?:两侧对称)?\s*(?:[)）])?\s*',
             text)
+        has_diameter = match and (match[1] or any('<MOD-DIAM>' in part for part in element.get('textParts', [])))
         model = views.get(element['view'])
-        candidates = []
+        candidates, wizard_sizes = [], []
         attachments = data.get('attachments', [])
-        if (match and model and (sheet.get('drawingUnits') or [None])[0] == 0
-                and len(attachments) == 1 and element.get('box')):
-            attachment = attachments[0]
+        if (not has_diameter or (sheet.get('drawingUnits') or [None])[0] != 0
+                or not element.get('box') or element.get('dangling') is not False
+                or data.get('visibilityApi') in (2, 3) or len(attachments) != 1):
+            unverified.append(element['id'])
+            continue
+        attachment = attachments[0]
+        if model:
             ref = (attachment.get('persistentReferences') or {}).get('model')
             if ref:
                 for part in model['components']:
@@ -79,17 +87,42 @@ def diameter_diff(packet, page):
                         part['configuration'] != attachment.get('componentConfiguration')
                     ):
                         continue
-                    candidates.extend(hole for hole in part.get('circularHoles', [])
-                                      if ref in hole.get('rimEdgePersistentIds', []))
-        if len(candidates) != 1:
+                    for hole in part.get('circularHoles', []):
+                        if ref not in hole.get('rimEdgePersistentIds', []):
+                            continue
+                        candidates.append(hole)
+                        for wizard in part.get('wizardHoles', []):
+                            if hole.get('wizardFeatureId') == wizard['id']:
+                                nominal = re.fullmatch(r'M(\d+(?:\.\d+)?)(?:[xX×]\d+(?:\.\d+)?)?',
+                                                       wizard.get('fastenerSize') or '')
+                                if nominal:
+                                    wizard_sizes.append(float(nominal[1]))
+        system_value = data.get('systemValue')
+        bound_thread = (attachment.get('selectionType') == 39 and not attachment.get('isNull')
+                        and any(record.startswith('DimensionThreadSymbol:')
+                                for record in element.get('associationRecords', [])))
+        actual_values = {}
+        if len(candidates) == 1:
+            actual_values['关联孔壁直径'] = candidates[0]['diameterM'] * 1000
+        if (len(candidates) == 1 or bound_thread or attachment.get('modelCircle')) and system_value and math.isfinite(system_value) and system_value > 0:
+            actual_values['SolidWorks 关联尺寸'] = system_value*1000
+        if len(set(wizard_sizes)) == 1:
+            actual_values['关联孔向导公称直径'] = wizard_sizes[0]
+        if not actual_values:
             unverified.append(element['id'])
             continue
-        drawn_mm = float(match[1].replace(',', '.'))
-        actual_mm = candidates[0]['diameterM'] * 1000
-        mismatch = not math.isclose(drawn_mm, actual_mm, rel_tol=0, abs_tol=1e-6)
+        drawn_mm = float(match[2].replace(',', '.'))
+        if not math.isfinite(drawn_mm) or drawn_mm <= 0:
+            unverified.append(element['id'])
+            continue
+        actual_mm = next(iter(actual_values.values()))
+        mismatch = not any(math.isclose(drawn_mm, value, rel_tol=0, abs_tol=1e-6)
+                           for value in actual_values.values())
+        sources = '、'.join(f'{label} Φ{value:g} mm' for label,value in actual_values.items())
+        subject = '孔径' if candidates or bound_thread else '直径'
         checks.append(dict(page=page, rule=6, status='problem' if mismatch else 'pass',
-                           title='2D 与 3D 孔径不一致' if mismatch else '2D 与 3D 孔径一致',
-                           reason=f'图面显示 Φ{drawn_mm:g} mm，关联的 3D 孔壁直径为 Φ{actual_mm:g} mm。',
+                           title=f'2D 与 3D {subject}' + ('不一致' if mismatch else '一致'),
+                           reason=f'图面显示 Φ{drawn_mm:g} mm。核验依据为{sources}。',
                            drawingDiameterMm=drawn_mm, modelDiameterMm=actual_mm,
                            elementIds=[element['id']], box=element['box']))
     return dict(page=page, checks=checks, unverifiedElementIds=unverified)
@@ -529,18 +562,29 @@ def hole_feature_evidence(sheet):
     ]
 
 
-def unreferenced_section_edges(sheet):
+def unreferenced_section_edges(sheet, *, ordinary=False):
+    view_types = (4, 6, 7, 8) if ordinary else (2, 3)
     views = {e['view']: e for e in sheet['elements'] if e['kind'] == 'view'
-             and (e.get('metadata') or {}).get('type') in (2, 3)}
+             and (e.get('metadata') or {}).get('type') in view_types}
     sections = {view: [] for view in views}
     attachments = {view: [] for view in views}
+    dimension_spans = {view: [] for view in views}
+    dimension_counts = dict.fromkeys(views, 0)
     for element in sheet['elements']:
         view = element.get('view')
         if view not in views:
             continue
+        if element['kind'] == 'dimension':
+            dimension_counts[view] += 1
         if element['kind'] == 'dimension' and not element.get('dangling'):
-            for attachment in (element.get('constraintEvidence') or {}).get('attachments', []):
+            constraint = element.get('constraintEvidence') or {}
+            for attachment in constraint.get('attachments', []):
                 attachments[view].extend(attachment.get('modelLineEndpointsM', []))
+            span = constraint.get('verifiedLinearSpan') or {}
+            points = span.get('pdfPointsPt') or []
+            if span.get('axis') in ('x', 'y') and len(points) == 2 and all(points):
+                axis = 'xy'.index(span['axis'])
+                dimension_spans[view].append((axis, sorted(point[axis] for point in points)))
         elif (element.get('shape') == 'line' and len(element.get('modelCoordinatesM') or []) == 6
               and len(points := element.get('pdfEndpointsPt') or []) == 2 and all(points)
               and math.dist(*points) > .1):
@@ -550,55 +594,104 @@ def unreferenced_section_edges(sheet):
         return min(max(math.dist(a[0], b[0]), math.dist(a[1], b[1])),
                    max(math.dist(a[0], b[1]), math.dist(a[1], b[0]))) <= .1
 
-    def local_spans(edges, view):
+    def local_spans(edges, unbound_ids, view):
         transform = view.get('transform')
         if not transform or len(transform) < 13 or not view.get('pdfBoxPt'):
             return []
+        outline = view['pdfBoxPt']
+        extents = [outline[2]-outline[0], outline[3]-outline[1]]
         spans = {}
         for a, b in combinations(edges, 2):
+            unbound = [edge['id'] in unbound_ids for edge in (a,b)]
+            if not any(unbound):
+                continue
             points = [edge['pdfEndpointsPt'] for edge in (a, b)]
+            lengths = [math.dist(line[:3],line[3:])*1000 for edge in (a,b) if (line := edge['modelCoordinatesM'])]
             for axis in (0, 1):
                 along = 1-axis
                 if any(abs(p[0][axis]-p[1][axis]) > .1 for p in points):
                     continue
                 first, second = (sorted(p, key=lambda q:q[along]) for p in points)
-                if any(abs(p[along]-q[along]) > .1 for p,q in zip(first,second)):
-                    continue
                 stations = sorted((first[0][axis],second[0][axis]))
                 if stations[1]-stations[0] <= .1:
                     continue
+                aligned = all(abs(p[along]-q[along]) <= .1 for p,q in zip(first,second))
+                source = 'parallel-edge-span'
+                bridge = None
+                witnesses = [first[0],second[0]]
+                if aligned:
+                    if not all(unbound):
+                        continue
+                else:
+                    gap = max(first[0][along]-second[1][along], second[0][along]-first[1][along])
+                    short_end = (0 < gap <= .05*extents[along]
+                                 and any(free and 0 < lengths[i] <= 5.0001 and lengths[1-i] >= 2*lengths[i]
+                                         for i,free in enumerate(unbound)))
+                    if stations[1]-stations[0] > .35*extents[axis]:
+                        continue
+                    if short_end:
+                        source = 'short-end-to-parallel-wall'
+                        witnesses = [first[1],second[0]] if first[0][along] < second[0][along] else [first[0],second[1]]
+                    elif not ordinary and dimension_counts[view['view']] == 0 and gap < 0:
+                        shared = (max(first[0][along],second[0][along]), min(first[1][along],second[1][along]))
+                        bridge = next((edge for edge in edges if
+                                       (ends := edge['pdfEndpointsPt'])
+                                       and abs(ends[0][along]-ends[1][along]) <= .1
+                                       and shared[0]-.1 <= ends[0][along] <= shared[1]+.1
+                                       and all(abs(p-q) <= .05*extents[axis]
+                                               for p,q in zip(sorted(pt[axis] for pt in ends), stations))), None)
+                        if not bridge:
+                            continue
+                        source = 'section-profile-projection'
+                        witnesses = [min(pair, key=lambda point: abs(point[along]-bridge['pdfEndpointsPt'][0][along]))
+                                     for pair in (first, second)]
+                    else:
+                        continue
+                if any(axis == dim_axis and all(abs(p-q) <= .1 for p,q in zip(stations,dim_stations))
+                       for dim_axis,dim_stations in dimension_spans[view['view']]):
+                    continue
                 delta = [b['modelCoordinatesM'][i]-a['modelCoordinatesM'][i] for i in range(3)]
-                if abs(sum(delta[i]*transform[3*i+2] for i in range(3))) > 1e-6:
+                if source != 'section-profile-projection' and abs(sum(delta[i]*transform[3*i+2] for i in range(3))) > 1e-6:
                     continue
                 span_mm = round(abs(sum(delta[i]*transform[3*i+axis] for i in range(3)))*1000, 4)
+                if ordinary and (span_mm > 30 or (source == 'parallel-edge-span' and span_mm > 10)):
+                    continue
                 key = (axis, *(round(p, 1) for p in stations))
                 candidate = dict(axis='x' if axis==0 else 'y', lengthMm=span_mm,
-                                 elementIds=[a['id'], b['id']], pdfEndpointsPt=[first[0],second[0]])
+                                 elementIds=[a['id'], b['id']], pdfEndpointsPt=witnesses, source=source)
+                if bridge:
+                    candidate['profileEdgeId'] = bridge['id']
                 bottom = max(point[1] for pair in points for point in pair)
-                if span_mm > 0 and (key not in spans or bottom > spans[key][0]):
-                    spans[key] = (bottom, candidate)
-        return [candidate for _,candidate in sorted(spans.values(), key=lambda row:-row[0])[:24]]
+                priority = (source != 'parallel-edge-span', bottom, span_mm)
+                if span_mm > 0 and (key not in spans or priority > spans[key][0]):
+                    spans[key] = (priority, candidate)
+        ranked = sorted(spans.values(), key=lambda row:row[0], reverse=True)
+        return [candidate for _,candidate in ranked[:6 if ordinary else 16]]
 
     result = []
     for view, edges in sections.items():
         candidates = []
-        unbound_edges = []
+        distinct_edges = []
+        unbound_ids = set()
         for index, edge in enumerate(edges):
             line = edge['modelCoordinatesM']
             points = edge['pdfEndpointsPt']
-            if any(same_line(line, attached) for attached in attachments[view]):
-                continue
             coincident = [i for i, other in enumerate(edges) if i != index
                           and shares_projection(points, other['pdfEndpointsPt'])]
             if any(i < index or not same_line(line, edges[i]['modelCoordinatesM']) for i in coincident):
                 continue
-            unbound_edges.append(edge)
+            distinct_edges.append(edge)
+            if any(same_line(line, attached) for attached in attachments[view]):
+                continue
+            unbound_ids.add(edge['id'])
             candidates.append(dict(elementId=edge['id'], box=edge.get('box'), pdfEndpointsPt=points,
                                    lengthMm=round(math.dist(line[:3], line[3:])*1000, 4)))
         candidates.sort(key=lambda edge: -edge['lengthMm'])
-        result.append(dict(view=view, viewName=views[view]['name'], viewElementId=views[view]['id'],
-                           candidateCount=len(candidates), edges=candidates[:24],
-                           localSpanCandidates=local_spans(unbound_edges, views[view])))
+        spans = local_spans(distinct_edges, unbound_ids, views[view])
+        if not ordinary or spans:
+            result.append(dict(view=view, viewName=views[view]['name'], viewElementId=views[view]['id'],
+                               dimensionCount=dimension_counts[view], candidateCount=len(candidates),
+                               edges=[] if ordinary else candidates[:16], localSpanCandidates=spans))
     return result
 
 
@@ -647,7 +740,10 @@ def call_drawing_tool(packet, name, args, raw_pages=None):
     if rule==6:
         sheet = packet['pages'][page-1]
         result['unreferencedSectionEdges'] = unreferenced_section_edges(sheet)
-        result['sectionEdgeScope'] = '每个剖视图和详图独立返回直边及横纵局部跨度候选。localSpanCandidates 是两条平行边之间的投影间距，优先列底部。须核对目标边、端点尺寸、其他视图和等效尺寸链后再判漏标。'
+        result['localProjectionSpans'] = unreferenced_section_edges(sheet, ordinary=True)
+        result['overallDimensionCandidates'] = [candidate for candidate in overall_dimension_candidates(packet)
+                                                if candidate['page'] == page]
+        result['sectionEdgeScope'] = '每个剖视图和详图独立返回直边及横纵局部跨度候选。short-end-to-parallel-wall 表示短自由端与邻近基准壁的投影间距，基准壁可以已被其他尺寸引用。已验证的同轴同端点跨度已排除。须核对目标边、其他视图和等效尺寸链后再判漏标。'
         result['toleranceNotes'] = [
             dict(elementId=e['id'], view=e['view'], text=e['text'], box=e.get('box'))
             for e in sheet['elements'] if e['kind']=='note'

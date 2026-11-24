@@ -39,6 +39,7 @@ DATA.mkdir(exist_ok=True)
 LOCK = threading.Lock()  # SolidWorks is a serialized desktop COM server.
 VISION_LOCK = threading.Lock()
 SETTINGS_LOCK = threading.Lock()
+JOB_SAVE_LOCK = threading.Lock()
 JOBS = {}
 for p in DATA.glob('*/job.json'):
     try:
@@ -51,11 +52,10 @@ for p in DATA.glob('*/job.json'):
 
 
 def save(j, **kw):
-    j.update(kw)
     target = DATA / j['id'] / 'job.json'
-    tmp = target.with_suffix('.tmp')
-    tmp.write_text(json.dumps(j, ensure_ascii=False, indent=2), encoding='utf-8')
-    tmp.replace(target)
+    with JOB_SAVE_LOCK:
+        write_json(target, dict(j, **kw))
+        j.update(kw)
 
 
 def safe_extract(archive, dest):
@@ -165,7 +165,9 @@ def convert(j, retry=False):
                             log.write(b'\nSolidWorks conversion timed out after 300 seconds.\n')
                             log.flush()
                             lines = [line.strip() for line in log_path.read_bytes().splitlines() if line.strip()]
-                            if len(lines)<2 or lines[-2].strip()!=b'Model inventory: reading body faces and openings':
+                            topology_stages = (b'Model inventory: reading body faces and openings',
+                                               b'Model inventory: reading spatial geometry')
+                            if len(lines)<2 or lines[-2] not in topology_stages:
                                 raise RuntimeError('SolidWorks 转换超过 300 秒，请查看转换日志中的最后阶段。') from None
                             limited = True
                             log.write(b'Retrying without body-face and visible-edge inventories.\n')
@@ -1127,8 +1129,8 @@ class Handler(BaseHTTPRequestHandler):
                 ident=path.split('/')[3];j=JOBS[ident]
                 if j['status'] not in ('completed','awaiting_confirmation','failed'):
                     return self.send({'error':'当前任务正在处理'},409)
-                if not any(f['status']=='failed' for f in j['files']):
-                    return self.send({'error':'没有转换失败的文件'},409)
+                if not any(f['status'] != 'ready' for f in j['files']):
+                    return self.send({'error':'没有需要重试的文件'},409)
                 for item in j['files']:
                     for key in ('issues','reviewResults','manualNotes','ruleReviews','agentRuleReviews','coverage','vision','reviewed'):item.pop(key,None)
                 save(j,status='queued',progress=0,error=None,message='重试失败图纸，保留已成功转换的文件。')

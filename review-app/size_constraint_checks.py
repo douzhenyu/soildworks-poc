@@ -122,14 +122,14 @@ def _result(rule, status, title, reason, data, element, **evidence):
                 view=data['view']['name'], box=element.get('box'), objectId=element['id'], evidence=evidence)
 
 
-def _envelope_checks(views):
+def _envelope_checks(views, *, direct_candidates=False):
     candidates = defaultdict(list)
     for data in views:
         view, envelope = data['view'], data['envelope']
         if not data['millimetres'] or not _full_part(view,envelope) or view['metadata']['type']==5 or not envelope['box']:
             continue
         lines = [e['modelCoordinatesM'] for e in data['entries'] if e.get('shape')=='line']
-        if not lines:
+        if not lines and not direct_candidates:
             continue
         for axis, name in enumerate(('x','y')):
             direction = _view_axis(view,axis)
@@ -139,13 +139,24 @@ def _envelope_checks(views):
             if len(limits)!=2 or limits[1]-limits[0]<=EPS:
                 continue
             witnesses = [_project(point,direction) for line in lines for point in (line[:3],line[3:])]
-            if all(_covers(witnesses,[end]) for end in limits):
+            if direct_candidates or all(_covers(witnesses,[end]) for end in limits):
                 candidates[direction].append((data,axis,limits))
     max_extent = max((limits[1]-limits[0] for rows in candidates.values() for _,_,limits in rows), default=0)
     angular = any(d['constraintEvidence']['typeCode'] in (3,16) and _usable(d) for v in views for d in v['dims'])
     for direction, candidates_on_axis in candidates.items():
         data, axis, limits = max(candidates_on_axis, key=lambda row: row[0]['view']['transform'][12])
         measured = list(_spans(views,direction))
+        if direct_candidates:
+            if any(all(_covers([_project(p,direction) for p in points], [end]) for end in limits)
+                   for _,_,points in measured):
+                continue
+            label = '横向' if axis == 0 else '纵向'
+            yield _result(6,'missing',f'{label}缺少已核实的直接总体尺寸',
+                          '已定位两端外廓，未找到绑定到两端的单条尺寸。核对其他视图和未绑定标注。',
+                          data,data['envelope'],axis=label,
+                          modelSpanMm=round((limits[1]-limits[0])*1000,3),
+                          dimensionIdCandidates=[dim['id'] for _,dim,_ in measured][:20])
+            continue
         graph = defaultdict(list)
         positions = []
         def node(point):
@@ -304,6 +315,12 @@ def _cross_view_loops(views, include_same_view=False):
                 yield _result(7,'problem',title,
                               '同一模型配置中，总尺寸两端已由分段尺寸逐段相连。可将一条重复约束改为括号参考尺寸。',
                               data,dim,direction=direction,dimensions=[dict(page=p[0]['page'],id=p[1]['id']) for p in path])
+
+
+def overall_dimension_candidates(packet):
+    _, grouped = _dimension_entries(packet)
+    for family in grouped.values():
+        yield from _envelope_checks(family, direct_candidates=True)
 
 
 def constraint_findings(packet, rules, hole_claims, *, include_same_view=False):
