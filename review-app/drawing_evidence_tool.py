@@ -38,7 +38,7 @@ DIMENSION_TOOL = {
 }
 DIFF_TOOL = {
     'name': '2D_vs_3D_Diff',
-    'description': '按页核对已绑定的孔口直径和标题栏声明的钣金板厚。problem 是确定性红框。',
+    'description': '按页比对工程图显示的线性尺寸、直径和标题栏钣金板厚与 SolidWorks 数据。problem 是确定性红框。',
     'annotations': {'readOnlyHint': True, 'openWorldHint': False},
     'inputSchema': {'type': 'object', 'properties': {'page': {'type': 'integer'}},
                     'required': ['page'], 'additionalProperties': False},
@@ -128,11 +128,48 @@ def diameter_diff(packet, page):
     return dict(page=page, checks=checks, unverifiedElementIds=unverified)
 
 
+def linear_diff(sheet):
+    if (sheet.get('drawingUnits') or [None])[0] != 0:
+        return
+    number = r'\d+(?:[.,]\d+)?'
+    for element in sheet['elements']:
+        if element['kind'] != 'dimension' or element.get('dangling') is not False or not element.get('box'):
+            continue
+        data = element.get('constraintEvidence') or {}
+        if (data.get('visibilityApi') != 1 or data.get('systemUnit') != 'm'
+                or (not data.get('verifiedLinearSpan') and data.get('typeCode') not in (1, 2))):
+            continue
+        value = data.get('systemValue')
+        if value is None or not math.isfinite(value):
+            continue
+        text = ''.join(fragment['text'] for fragment in element.get('renderedText', [])).strip()
+        if (text.startswith('(') and text.endswith(')')) or (text.startswith('（') and text.endswith('）')):
+            text = text[1:-1].strip()
+        # A pitch expression measures a different quantity unless a total is printed.
+        match = re.fullmatch(rf'(?:{number}(?:\s*[×xX*]\s*{number})+\s*[=＝]\s*)?([+−-]?{number})', text)
+        if not match:
+            continue
+        shown = match[1].replace(',', '.').replace('−', '-')
+        drawn_mm = float(shown)
+        actual_mm = value * 1000
+        if not math.isfinite(drawn_mm) or not math.isfinite(actual_mm):
+            continue
+        decimals = len(shown.partition('.')[2])
+        rounding_allowance = .5 * 10**-decimals
+        if abs(drawn_mm-actual_mm) <= max(.05, rounding_allowance) + 1e-9:
+            continue
+        yield dict(page=sheet['page'], rule=6, status='problem', title='2D 与 3D 线性尺寸不一致',
+                   reason=f'图面显示 {shown} mm，SolidWorks 关联尺寸为 {actual_mm:.10g} mm。',
+                   drawingLengthMm=drawn_mm, modelLengthMm=actual_mm,
+                   elementIds=[element['id']], box=element['box'])
+
+
 def drawing_model_diff(packet, page):
     result = diameter_diff(packet, page)
     if 'error' in result:
         return result
     sheet = packet['pages'][page - 1]
+    result['checks'].extend(linear_diff(sheet))
     if (sheet.get('drawingUnits') or [None])[0] != 0:
         return result
     models = packet.get('models', {})

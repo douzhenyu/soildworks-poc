@@ -8,6 +8,27 @@ import server
 
 
 class DrawingAgentTest(unittest.TestCase):
+    def test_linear_diff_compares_displayed_nominal_at_its_printed_precision(self):
+        def dimension(ident, text, value, **state):
+            return dict(kind='dimension', id=ident, view='front', dangling=state.get('dangling', False),
+                        box=[.1,.2,.3,.4], renderedText=[{'text':text}],
+                        constraintEvidence=dict(typeCode=2, systemUnit='m', systemValue=value,
+                                                visibilityApi=state.get('visibility', 1)))
+
+        sheet = dict(page=1, drawingUnits=[0], elements=[
+            dimension('override', '180', .182),
+            dimension('total-override', '3×20 = 70', .0744369221296335),
+            dimension('ordinary-rounding', '74', .0744369221296335),
+            dimension('near-match', '74.4', .0744369221296335),
+            dimension('pitch', '3×20', .0744369221296335),
+            dimension('toleranced', '70 ±0.1', .0744369221296335),
+            dimension('hidden', '70', .0744369221296335, visibility=2),
+            dimension('dangling', '70', .0744369221296335, dangling=True),
+        ])
+        result = server.drawing_model_diff({'pages':[sheet]}, 1)
+        self.assertEqual([row['elementIds'] for row in result['checks']], [['override'], ['total-override']])
+        self.assertTrue(all(row['status'] == 'problem' and row['box'] for row in result['checks']))
+
     def test_complete_agent_review_does_not_execute_fallback_engine(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
